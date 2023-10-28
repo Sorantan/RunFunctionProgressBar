@@ -1,25 +1,36 @@
 import time
 import traceback
-from collections import UserDict, deque
+from collections import deque
 from collections.abc import Callable
 from functools import partial, wraps
 
-from qtpy.QtCore import QObject, Qt, QThread, QTimer, Signal
+from qtpy.QtCore import Qt, QThread, QTimer, Signal
 from qtpy.QtGui import QCloseEvent
 from qtpy.QtWidgets import (QApplication, QMainWindow, QProgressBar,
                             QPushButton, QVBoxLayout, QWidget)
 
 
-class PredictionTime(UserDict[str, deque]):
+class PredictionTime:
     """
     A class to keep track of prediction time for different functions.
     """
     QUEUE_LEN = 3
 
-    def __init__(dict_=None, /, **kwargs):
-        super().__init__(dict_, **kwargs)
+    def __init__(self, dict_: dict[str, deque] | None = None):
+        """
+        Initialize the PredictionTime instance.
 
-    def _set_time(self, key: str, end_time:float):
+        Parameters
+        ----------
+        dict_ : dict[str, deque] | None, optional
+            A dictionary to initialize the times, by default None
+        """
+        if dict_ is None:
+            self.times = {}
+        else:
+            self.times = dict_
+
+    def _set_time(self, key: str, end_time: float):
         """
         Set the time for a given key.
 
@@ -30,13 +41,12 @@ class PredictionTime(UserDict[str, deque]):
         end_time : float
             The end time for the function execution.
         """
-        if key in self:
-            if len(self[key]) >= self.QUEUE_LEN:
-                self[key].popleft()
-            self[key].append(end_time)
+        if key in self.times:
+            if len(self.times[key]) >= self.QUEUE_LEN:
+                self.times[key].popleft()
+            self.times[key].append(end_time)
         else:
-            time_queue = deque([end_time])
-            super().__setitem__(key=key, item=time_queue)
+            self.times[key] = deque([end_time])
 
     def update_time(self, key: str, end_time: float):
         """
@@ -62,7 +72,7 @@ class PredictionTime(UserDict[str, deque]):
         end_time : float
             The end time for the function execution.
         """
-        if not key in self:
+        if key not in self.times:
             self._set_time(key=key, end_time=end_time)
 
     def get_time(self, key: str) -> float:
@@ -79,17 +89,11 @@ class PredictionTime(UserDict[str, deque]):
         float
             The average time for the function execution.
         """
-        time_queue = super().__getitem__(key=key)
-        return sum(time_queue)/len(time_queue)
+        time_queue = self.times.get(key, [])
+        return sum(time_queue) / len(time_queue) if time_queue else 0
 
 
 prediction_time = PredictionTime()
-
-
-class Closure(Callable):
-    __name__ = Callable.__name__
-    __args_repr__ = repr
-    __kwargs_repr__ = repr
 
 
 class RunFunctionProgressBar(QWidget):
@@ -100,13 +104,15 @@ class RunFunctionProgressBar(QWidget):
     finish_signal = Signal()
     error_signal = Signal()
 
-    def __init__(self, closure: Closure,
+    def __init__(self, closure: Callable,
                init_end_time: float,
                title: str | None = None,
                parent: QWidget | None = None,
                offset_pos: tuple[int, int] | None = None,
-               ) -> None:
+               ):
         """
+        Initialize the RunFunctionProgressBar.
+
         Parameters
         ----------
         closure : Closure
@@ -121,6 +127,7 @@ class RunFunctionProgressBar(QWidget):
             The window position offset from the parent window, by default None
         """
         super().__init__()
+
         self.setWindowFlags(Qt.Window | Qt.WindowSystemMenuHint
                             | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
 
@@ -134,23 +141,23 @@ class RunFunctionProgressBar(QWidget):
             )
 
         self.function_name = closure.__name__
-        self.key_name = (closure.__name__
-                         + closure.__args_repr__ + closure.__kwargs_repr__)
-        print(self.function_name)
+        self.key_name = (self.function_name
+                         + repr(closure.args) + repr(closure.kwargs))
+        print(self.key_name)
 
         self._init_ui(title=title)
         self._init_func_thread(closure=closure)
         prediction_time.init_time(key=self.key_name, end_time=init_end_time)
         self.function_timer = FunctionTimer(end_time=init_end_time, parent=self)
 
-    def _init_ui(self, title: str | None) -> None:
+    def _init_ui(self, title: str | None):
         """
         Initialize the user interface.
 
         Parameters
         ----------
         title : str | None
-            The title of the  progress bar window.
+            The title of the progress bar window.
         """
         self.setWindowTitle(
             f"{self.function_name} Progress Bar" if title is None else title)
@@ -158,18 +165,17 @@ class RunFunctionProgressBar(QWidget):
         self.setLayout(self.layout)
 
         self.progress_bar = QProgressBar(self)
-        self.progress_bar.setMinimum(0)
-        self.progress_bar.setMaximum(100)
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
 
         self.layout.addWidget(self.progress_bar)
 
-    def _init_func_thread(self, closure: Closure) -> None:
+    def _init_func_thread(self, closure: Callable):
         """Initialize the function worker thread.
 
         Parameters
         ----------
-        closure : Closure
+        closure : Callable
             The closure function to be executed in the worker thread.
         """
         self.func_thread = FunctionWorker(closure=closure, parent=self)
@@ -178,7 +184,7 @@ class RunFunctionProgressBar(QWidget):
         self.func_thread.result_signal.connect(self._result)
         self.func_thread.error_signal.connect(self._error)
 
-    def _reset_timer(self) -> None:
+    def _reset_timer(self):
         """
         Reset the timer.
         """
@@ -190,7 +196,7 @@ class RunFunctionProgressBar(QWidget):
         self.function_timer = FunctionTimer(end_time=self.predicted_time, parent=self)
         self.function_timer.progress_changed.connect(self._update_progressbar)
 
-    def run(self,) -> None:
+    def run(self):
         """
         Run the function and start the progress timer.
         """
@@ -206,7 +212,7 @@ class RunFunctionProgressBar(QWidget):
             self.func_thread.start()
             self.function_timer.start()
 
-    def _finished(self) -> None:
+    def _finished(self):
         """
         Handle the finishing of the function execution.
 
@@ -224,7 +230,7 @@ class RunFunctionProgressBar(QWidget):
         self.function_timer.finish()
         self.close()
 
-    def _result(self, values: object) -> None:
+    def _result(self, values: object):
         """
         Handle the result of the function execution.
 
@@ -237,7 +243,7 @@ class RunFunctionProgressBar(QWidget):
         self.result_values = values
         self.error_status = None
 
-    def _error(self, err: tuple[Exception, str]) -> None:
+    def _error(self, err: tuple[Exception, str]):
         """
         Handle the error during the function execution.
 
@@ -251,7 +257,7 @@ class RunFunctionProgressBar(QWidget):
         self.result_values = None
         self.error_signal.emit()
 
-    def _update_progressbar(self, i: int) -> None:
+    def _update_progressbar(self, i: int):
         """
         Update the progress bar value.
 
@@ -262,7 +268,7 @@ class RunFunctionProgressBar(QWidget):
         """
         self.progress_bar.setValue(i)
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def closeEvent(self, event: QCloseEvent):
         """
         Handle the closing of the progress bar window.
 
@@ -280,7 +286,7 @@ class RunFunctionProgressBar(QWidget):
         return super().closeEvent(event)
 
     @staticmethod
-    def make_closure(func: Callable, *args, **kwargs) -> Closure:
+    def make_closure(func: Callable, *args, **kwargs) -> Callable:
         """
         Create a closure function with arguments.
 
@@ -295,20 +301,20 @@ class RunFunctionProgressBar(QWidget):
 
         Returns
         -------
-        Closure
+        Callable
             The closure function with arguments.
         """
         @wraps(func)
         def _func():
             return func(*args, **kwargs)
 
-        _func.__args_repr__ = repr(args)
-        _func.__kwargs_repr__ = repr(kwargs)
+        _func.args = args
+        _func.kwargs = kwargs
 
         return _func
 
 
-class FunctionTimer(QObject):
+class FunctionTimer(QWidget):
     """
     A class to keep track of the progress of a running function.
     """
@@ -316,14 +322,14 @@ class FunctionTimer(QObject):
     progress_changed = Signal(int)
 
     def __init__(self, end_time: float,
-                 parent: QObject | None = None) -> None:
+                 parent: QWidget | None = None):
         """
         Parameters
         ----------
         end_time : float
             The time for the function execution.
-        parent : QObject | None, optional
-            The parent object, by default None
+        parent : QWidget | None, optional
+            The parent widget, by default None
         """
         super().__init__(parent)
 
@@ -338,13 +344,13 @@ class FunctionTimer(QObject):
         self.start_time = time.time()
         self.finish_flag = False
 
-    def start(self) -> None:
+    def start(self):
         """
         Start the timer.
         """
         self.timer.start(self.millisec)
 
-    def increment(self) -> None:
+    def increment(self):
         """
         Increment the progress and emit the progress_changed signal.
         """
@@ -371,7 +377,7 @@ class FunctionTimer(QObject):
         percentage = int((time.time() - self.start_time)/self.end_time*100)
         return min(percentage, max_per)
 
-    def finish(self) -> None:
+    def finish(self):
         """
         Finish the progress and emit the progress_changed signal with 100.
         """
@@ -389,20 +395,20 @@ class FunctionWorker(QThread):
     error_signal = Signal(object)
     finished_signal = Signal()
 
-    def __init__(self, closure: Closure ,parent: QObject | None = None) -> None:
+    def __init__(self, closure: Callable, parent: QWidget | None = None):
         """
         Parameters
         ----------
-        closure : Closure
+        closure : Callable
             The closure function to be executed in the worker thread.
-        parent : QObject | None, optional
+        parent : QWidget | None, optional
             The parent object, by default None
         """
         super().__init__(parent)
 
         self.closure = closure
 
-    def run(self) -> None:
+    def run(self):
         """
         Run the closure function and emit the result or error signal.
 
@@ -444,7 +450,7 @@ def error_function(t: int) -> int:
     return t*10
 
 
-#alias
+# Alias for RunFunctionProgressBar
 RFPB = RunFunctionProgressBar
 
 
@@ -452,7 +458,7 @@ class MainWindow(QMainWindow):
     """
     The main window class of the application.
     """
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
 
         self.setWindowTitle("Main Window")
@@ -488,7 +494,7 @@ class MainWindow(QMainWindow):
             print("Raise Error: \n" + err[1])
         button.setEnabled(True)
 
-    def show_progress_bar1(self) -> None:
+    def show_progress_bar1(self):
         """
         SHow the progress bar window for function 1.
         """
@@ -503,7 +509,7 @@ class MainWindow(QMainWindow):
         self.object_list.append(progress_bar_window)
         progress_bar_window.run()
 
-    def show_progress_bar2(self) -> None:
+    def show_progress_bar2(self):
         """
         SHow the progress bar window for function 2.
         """
@@ -518,7 +524,7 @@ class MainWindow(QMainWindow):
         self.object_list.append(progress_bar_window)
         progress_bar_window.run()
 
-    def show_progress_bar3(self) -> None:
+    def show_progress_bar3(self):
         """
         SHow the progress bar window for function 3.
         """
@@ -533,7 +539,7 @@ class MainWindow(QMainWindow):
         self.object_list.append(progress_bar_window)
         progress_bar_window.run()
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def closeEvent(self, event: QCloseEvent):
         for w in self.object_list:
             w.close()
         return super().closeEvent(event)
@@ -543,4 +549,3 @@ if __name__=="__main__":
     window = MainWindow()
     window.show()
     app.exec_()
-
