@@ -3,11 +3,16 @@ import traceback
 from collections import deque
 from collections.abc import Callable
 from functools import partial, wraps
+from typing import ParamSpec, TypeVar
 
 from qtpy.QtCore import Qt, QThread, QTimer, Signal
 from qtpy.QtGui import QCloseEvent
 from qtpy.QtWidgets import (QApplication, QMainWindow, QProgressBar,
                             QPushButton, QVBoxLayout, QWidget)
+
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 class PredictionTime:
@@ -104,7 +109,7 @@ class RunFunctionProgressBar(QWidget):
     finish_signal = Signal()
     error_signal = Signal()
 
-    def __init__(self, closure: Callable,
+    def __init__(self, closure: Callable[[], R],
                init_end_time: float,
                title: str | None = None,
                parent: QWidget | None = None,
@@ -161,16 +166,16 @@ class RunFunctionProgressBar(QWidget):
         """
         self.setWindowTitle(
             f"{self.function_name} Progress Bar" if title is None else title)
-        self.layout = QVBoxLayout()
-        self.setLayout(self.layout)
+        self.v_layout = QVBoxLayout()
+        self.setLayout(self.v_layout)
 
         self.progress_bar = QProgressBar(self)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
 
-        self.layout.addWidget(self.progress_bar)
+        self.v_layout.addWidget(self.progress_bar)
 
-    def _init_func_thread(self, closure: Callable):
+    def _init_func_thread(self, closure: Callable[[], R]):
         """Initialize the function worker thread.
 
         Parameters
@@ -286,7 +291,7 @@ class RunFunctionProgressBar(QWidget):
         return super().closeEvent(event)
 
     @staticmethod
-    def make_closure(func: Callable, *args, **kwargs) -> Callable:
+    def make_closure(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> Callable[[], R]:
         """
         Create a closure function with arguments.
 
@@ -395,7 +400,7 @@ class FunctionWorker(QThread):
     error_signal = Signal(object)
     finished_signal = Signal()
 
-    def __init__(self, closure: Callable, parent: QWidget | None = None):
+    def __init__(self, closure: Callable[[], R], parent: QWidget | None = None):
         """
         Parameters
         ----------
@@ -435,7 +440,6 @@ def heavy_function(t: int) -> int:
 
     return t*10
 
-
 def error_function(t: int) -> int:
     """
     The heavy function for test.
@@ -467,22 +471,22 @@ class MainWindow(QMainWindow):
         self.central_widget = QWidget(self)
         self.setCentralWidget(self.central_widget)
 
-        self.layout = QVBoxLayout()
-        self.central_widget.setLayout(self.layout)
+        self.v_layout = QVBoxLayout()
+        self.central_widget.setLayout(self.v_layout)
 
         self.object_list: list[RFPB] = []
 
         self.start_button1 = QPushButton("Start 1")
         self.start_button1.clicked.connect(self.show_progress_bar1)
-        self.layout.addWidget(self.start_button1)
+        self.v_layout.addWidget(self.start_button1)
 
         self.start_button2 = QPushButton("Start 2")
         self.start_button2.clicked.connect(self.show_progress_bar2)
-        self.layout.addWidget(self.start_button2)
+        self.v_layout.addWidget(self.start_button2)
 
         self.start_button3 = QPushButton("Start 3")
         self.start_button3.clicked.connect(self.show_progress_bar3)
-        self.layout.addWidget(self.start_button3)
+        self.v_layout.addWidget(self.start_button3)
 
     def finished(self, window: RFPB, button: QPushButton):
         """
