@@ -1,5 +1,6 @@
 import time
 import traceback
+from typing import Optional
 from collections import deque
 from collections.abc import Callable
 from functools import partial, wraps
@@ -7,8 +8,7 @@ from typing import ParamSpec, TypeVar
 
 from qtpy.QtCore import Qt, QThread, QTimer, Signal
 from qtpy.QtGui import QCloseEvent
-from qtpy.QtWidgets import (QApplication, QMainWindow, QProgressBar,
-                            QPushButton, QVBoxLayout, QWidget)
+from qtpy.QtWidgets import QProgressBar, QVBoxLayout, QWidget
 
 
 P = ParamSpec("P")
@@ -147,7 +147,7 @@ class RunFunctionProgressBar(QWidget):
 
         self.function_name = closure.__name__
         self.key_name = (self.function_name
-                         + repr(closure.args) + repr(closure.kwargs))
+                         + repr(closure.args) + repr(closure.kwargs) + repr(closure.optional))
         print(self.key_name)
 
         self._init_ui(title=title)
@@ -315,6 +315,7 @@ class RunFunctionProgressBar(QWidget):
 
         _func.args = args
         _func.kwargs = kwargs
+        _func.optional = None
 
         return _func
 
@@ -428,128 +429,3 @@ class FunctionWorker(QThread):
             self.result_signal.emit(r)
         finally:
             self.finished_signal.emit()
-
-
-def heavy_function(t: int) -> int:
-    """
-    The heavy function for test.
-    """
-    for i in range(t):
-        time.sleep(1)
-        print("Count: ", i+1)
-
-    return t*10
-
-def error_function(t: int) -> int:
-    """
-    The heavy function for test.
-    """
-    for i in range(t):
-        time.sleep(1)
-        print("Count: ", i+1)
-
-        if i == 5:
-            raise ValueError("Five!!")
-
-    return t*10
-
-
-# Alias for RunFunctionProgressBar
-RFPB = RunFunctionProgressBar
-
-
-class MainWindow(QMainWindow):
-    """
-    The main window class of the application.
-    """
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-
-        self.setWindowTitle("Main Window")
-        self.setGeometry(300, 300, 200, 100)
-
-        self.central_widget = QWidget(self)
-        self.setCentralWidget(self.central_widget)
-
-        self.v_layout = QVBoxLayout()
-        self.central_widget.setLayout(self.v_layout)
-
-        self.object_list: list[RFPB] = []
-
-        self.start_button1 = QPushButton("Start 1")
-        self.start_button1.clicked.connect(self.show_progress_bar1)
-        self.v_layout.addWidget(self.start_button1)
-
-        self.start_button2 = QPushButton("Start 2")
-        self.start_button2.clicked.connect(self.show_progress_bar2)
-        self.v_layout.addWidget(self.start_button2)
-
-        self.start_button3 = QPushButton("Start 3")
-        self.start_button3.clicked.connect(self.show_progress_bar3)
-        self.v_layout.addWidget(self.start_button3)
-
-    def finished(self, window: RFPB, button: QPushButton):
-        """
-        Handle the finishing of function.
-        """
-        print("Returned Values: ", window.result_values)
-        err = window.error_status
-        if err is not None:
-            print("Raise Error: \n" + err[1])
-        button.setEnabled(True)
-
-    def show_progress_bar1(self):
-        """
-        SHow the progress bar window for function 1.
-        """
-        self.start_button1.setEnabled(False)
-        progress_bar_window = RFPB(
-            RFPB.make_closure(heavy_function, 10), init_end_time=7,
-            parent=self, offset_pos=(300, 0),
-        )
-        progress_bar_window.finish_signal.connect(
-            partial(self.finished, progress_bar_window, self.start_button1)
-        )
-        self.object_list.append(progress_bar_window)
-        progress_bar_window.run()
-
-    def show_progress_bar2(self):
-        """
-        SHow the progress bar window for function 2.
-        """
-        self.start_button2.setEnabled(False)
-        progress_bar_window = RFPB(
-            RFPB.make_closure(heavy_function, t=5), init_end_time=7,
-            parent=self, offset_pos=(300, 100),
-        )
-        progress_bar_window.finish_signal.connect(
-            partial(self.finished, progress_bar_window, self.start_button2)
-        )
-        self.object_list.append(progress_bar_window)
-        progress_bar_window.run()
-
-    def show_progress_bar3(self):
-        """
-        SHow the progress bar window for function 3.
-        """
-        self.start_button3.setEnabled(False)
-        progress_bar_window = RFPB(
-            RFPB.make_closure(error_function, 10), init_end_time=7,
-            parent=self, offset_pos=(300, 200),
-        )
-        progress_bar_window.finish_signal.connect(
-            partial(self.finished, progress_bar_window, self.start_button3)
-        )
-        self.object_list.append(progress_bar_window)
-        progress_bar_window.run()
-
-    def closeEvent(self, event: QCloseEvent):
-        for w in self.object_list:
-            w.close()
-        return super().closeEvent(event)
-
-if __name__=="__main__":
-    app = QApplication([])
-    window = MainWindow()
-    window.show()
-    app.exec_()
