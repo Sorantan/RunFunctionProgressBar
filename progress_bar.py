@@ -3,7 +3,7 @@ import traceback
 from typing import Optional
 from collections import deque
 from collections.abc import Callable
-from functools import partial, wraps
+from functools import wraps
 from typing import ParamSpec, TypeVar
 
 from qtpy.QtCore import Qt, QThread, QTimer, Signal
@@ -15,19 +15,30 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
+class WindowClosed(Exception):
+    pass
+
+
+class Closure(Callable):
+    __name__ = Callable.__name__
+    args = tuple
+    kwargs = dict
+    option = Optional[any]
+
+
 class PredictionTime:
     """
     A class to keep track of prediction time for different functions.
     """
     QUEUE_LEN = 3
 
-    def __init__(self, dict_: dict[str, deque] | None = None):
+    def __init__(self, dict_: Optional[dict[str, deque]] = None):
         """
         Initialize the PredictionTime instance.
 
         Parameters
         ----------
-        dict_ : dict[str, deque] | None, optional
+        dict_ : Optional[dict[str, deque]], optional
             A dictionary to initialize the times, by default None
         """
         if dict_ is None:
@@ -109,27 +120,18 @@ class RunFunctionProgressBar(QWidget):
     finish_signal = Signal()
     error_signal = Signal()
 
-    def __init__(self, closure: Callable[[], R],
-               init_end_time: float,
-               title: str | None = None,
-               parent: QWidget | None = None,
-               offset_pos: tuple[int, int] | None = None,
+    def __init__(self,
+               title: Optional[str] = None,
+               parent: Optional[QWidget] = None,
+               offset_pos: Optional[tuple[int, int]] = None,
                ):
         """
-        Initialize the RunFunctionProgressBar.
+        Initialize the RunFunctionWorker instance.
 
         Parameters
         ----------
-        closure : Closure
-            The closure function to be executed in the worker thread.
-        init_end_time : float
-            The time for the function execution.
-        title : str | None, optional
-            The title of the progress bar window, by default None
-        parent : QWidget | None, optional
-            The parent widget, by default None
-        offset_pos : tuple[int, int] | None, optional
-            The window position offset from the parent window, by default None
+        parent : Optional[QWidget], optional
+            The parent widget for the progress bar window, by default None
         """
         super().__init__()
 
@@ -145,27 +147,25 @@ class RunFunctionProgressBar(QWidget):
                 parent.geometry().y() + offset_pos[1]
             )
 
-        self.function_name = closure.__name__
-        self.key_name = (self.function_name
-                         + repr(closure.args) + repr(closure.kwargs) + repr(closure.optional))
-        print(self.key_name)
-
         self._init_ui(title=title)
-        self._init_func_thread(closure=closure)
-        prediction_time.init_time(key=self.key_name, end_time=init_end_time)
-        self.function_timer = FunctionTimer(end_time=init_end_time, parent=self)
+        self._init_func_thread()
 
-    def _init_ui(self, title: str | None):
+        self.function_timer = FunctionTimer(parent=self)
+        self.function_timer.progress_changed.connect(self._update_progressbar)
+
+        self.function_name = None
+
+    def _init_ui(self, title: Optional[str]):
         """
         Initialize the user interface.
 
         Parameters
         ----------
-        title : str | None
+        title : Optional[str]
             The title of the progress bar window.
         """
         self.setWindowTitle(
-            f"{self.function_name} Progress Bar" if title is None else title)
+            "Progress Bar" if title is None else title)
         self.v_layout = QVBoxLayout()
         self.setLayout(self.v_layout)
 
@@ -175,35 +175,52 @@ class RunFunctionProgressBar(QWidget):
 
         self.v_layout.addWidget(self.progress_bar)
 
-    def _init_func_thread(self, closure: Callable[[], R]):
-        """Initialize the function worker thread.
-
-        Parameters
-        ----------
-        closure : Callable
-            The closure function to be executed in the worker thread.
+    def _init_func_thread(self):
         """
-        self.func_thread = FunctionWorker(closure=closure, parent=self)
+        Initialize the function worker thread.
+        """
+        self.func_thread = FunctionWorker(parent=self)
 
         self.func_thread.finished_signal.connect(self._finished)
         self.func_thread.result_signal.connect(self._result)
         self.func_thread.error_signal.connect(self._error)
 
+    def set_closure(self, closure: Closure[[], R], init_end_time: float):
+        """
+        Set the closure function and initialize the time for the function.
+
+        Parameters
+        ----------
+        closure : Closure[[], R]
+            The closure function to be executed.
+        init_end_time : float
+            The initial end time for the function execution.
+        """
+        self.func_thread.set_closure(closure=closure)
+
+        self.function_name = closure.__name__
+        self.key_name = (self.function_name
+                         + repr(closure.args) + repr(closure.kwargs) + repr(closure.option))
+        print(self.key_name)
+
+        prediction_time.init_time(
+            key=self.key_name, end_time=init_end_time if init_end_time > 0 else 0.1)
+
     def _reset_timer(self):
         """
-        Reset the timer.
+        Reset the function timer based on predicted time.
         """
-        del self.function_timer
         self.predicted_time = prediction_time.get_time(key=self.key_name)
 
         print(f'Get predicted_time: {self.predicted_time}')
 
-        self.function_timer = FunctionTimer(end_time=self.predicted_time, parent=self)
-        self.function_timer.progress_changed.connect(self._update_progressbar)
+        self.function_timer.set_timer(end_time=self.predicted_time)
 
     def run(self):
         """
-        Run the function and start the progress timer.
+        Start the execution of the closure function.
+
+        If the function thread is already running, a message is printed.
         """
         if self.func_thread.isRunning():
             print("Working now")
@@ -274,24 +291,22 @@ class RunFunctionProgressBar(QWidget):
         self.progress_bar.setValue(i)
 
     def closeEvent(self, event: QCloseEvent):
-        """
+        """"
         Handle the closing of the progress bar window.
 
-        Parameters
-        ----------
-        event : QCloseEvent
-            The close event.
+        If the function thread is running, it terminates the thread.
         """
-        if not self.func_thread.isFinished():
+        if self.func_thread.isRunning():
             self.result_values = None
-            self.error_status = None
+            self.error_status =\
+                (WindowClosed, f"Closed the window during the {self.function_name} working")
             self.func_thread.terminate()
             self.finish_signal.emit()
             self.error_signal.emit()
         return super().closeEvent(event)
 
     @staticmethod
-    def make_closure(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> Callable[[], R]:
+    def make_closure(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> Closure[[], R]:
         """
         Create a closure function with arguments.
 
@@ -306,7 +321,7 @@ class RunFunctionProgressBar(QWidget):
 
         Returns
         -------
-        Callable
+        Closure[[], R]
             The closure function with arguments.
         """
         @wraps(func)
@@ -315,7 +330,7 @@ class RunFunctionProgressBar(QWidget):
 
         _func.args = args
         _func.kwargs = kwargs
-        _func.optional = None
+        _func.option = None
 
         return _func
 
@@ -327,26 +342,34 @@ class FunctionTimer(QWidget):
 
     progress_changed = Signal(int)
 
-    def __init__(self, end_time: float,
-                 parent: QWidget | None = None):
+    def __init__(self, parent: Optional[QWidget] = None):
         """
+        Initialize the FunctionTimer instance.
+
         Parameters
         ----------
-        end_time : float
-            The time for the function execution.
-        parent : QWidget | None, optional
+        parent : Optional[QWidget], optional
             The parent widget, by default None
         """
         super().__init__(parent)
 
-        self.end_time = end_time
-        self.millisec = int(self.end_time*10)  # the millisec of 1 percent progress
-                                               # self.end_time/100*1000
         self.timer = QTimer()
 
         self.timer.timeout.connect(self.increment)
-        self.i = 0
 
+    def set_timer(self, end_time: float):
+        """Set the time for the function execution and reset the timer.
+
+        Parameters
+        ----------
+        end_time : float
+            The time for the function execution.
+        """
+        self.end_time = end_time
+        self.millisec = int(self.end_time*10)  # the millisec of 1 percent progress
+                                               # self.end_time/100*1000
+
+        self.i = 0
         self.start_time = time.time()
         self.finish_flag = False
 
@@ -401,17 +424,25 @@ class FunctionWorker(QThread):
     error_signal = Signal(object)
     finished_signal = Signal()
 
-    def __init__(self, closure: Callable[[], R], parent: QWidget | None = None):
+    def __init__(self, parent: Optional[QWidget] = None):
         """
+        Initialize the FunctionWorker instance.
+
         Parameters
         ----------
-        closure : Callable
-            The closure function to be executed in the worker thread.
-        parent : QWidget | None, optional
+        parent : Optional[QWidget], optional
             The parent object, by default None
         """
         super().__init__(parent)
 
+    def set_closure(self, closure: Closure[[], R]):
+        """Set the executed closure.
+
+        Parameters
+        ----------
+        closure : Closure[[], R]
+            The closure function to be executed in the worker thread.
+        """
         self.closure = closure
 
     def run(self):
